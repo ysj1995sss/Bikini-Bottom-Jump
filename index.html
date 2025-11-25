@@ -27,12 +27,14 @@
             background: #000;
         }
 
+        /* Keep the canvas pixelated (retro look). We'll maintain its logical internal resolution (640x360)
+           but resize the visible CSS size to fit the viewport in JS (preserving aspect ratio). */
         canvas {
             image-rendering: pixelated; /* Essential for retro look */
             box-shadow: 0 0 40px rgba(0,0,0,0.5);
-            max-width: 100%;
-            max-height: 100%;
+            display: block; /* remove inline gaps */
             background-color: #38bdf8;
+            /* No hardcoded CSS width/height here — we set visual size via JS to preserve aspect ratio and avoid clipping */
         }
 
         /* Scanline Effect */
@@ -138,12 +140,21 @@
 
         .control-btn:active { background: rgba(255, 255, 255, 0.4); }
 
+        /* Hide any preset/picker UI that might be injected into the start screen.
+           This prevents exposing a named preset picker on the main start screen.
+           It's scoped to #startScreen only so other UI isn't affected. */
+        #startScreen select,
+        #startScreen .preset-picker,
+        #startScreen [data-tailwind-preset] {
+            display: none !important;
+        }
+
     </style>
 </head>
 <body>
 
     <div id="game-container">
-        <canvas id="gameCanvas" width="640" height="360"></canvas>
+        <canvas id="gameCanvas" width="640" height="360" aria-label="Game canvas"></canvas>
         <div class="scanlines"></div>
 
         <div id="hud">
@@ -206,15 +217,48 @@
         // ==========================================
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
-        
+
+        // Logical/backing resolution used by the game logic
+        // (we keep these fixed so game coordinates remain the same)
+        const BASE_WIDTH = 640;
+        const BASE_HEIGHT = 360;
+
+        // On-screen visual size will be adjusted to fit the viewport while preserving aspect ratio.
+        function resizeCanvasToViewport() {
+            // Compute scale so the whole canvas fits the viewport without clipping.
+            // This prevents any part (including the bottom) from being cut off.
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+
+            // Use min to ensure the entire canvas is visible (no clipping).
+            const scale = Math.min(vw / BASE_WIDTH, vh / BASE_HEIGHT);
+
+            const cssWidth = Math.round(BASE_WIDTH * scale);
+            const cssHeight = Math.round(BASE_HEIGHT * scale);
+
+            // Apply CSS size (visual). The internal canvas.width/height (logical pixels) remain unchanged
+            // so game logic that uses canvas.width/canvas.height keeps working as-is.
+            canvas.style.width = cssWidth + 'px';
+            canvas.style.height = cssHeight + 'px';
+
+            // Optionally center the canvas in the container (flex already centers).
+            // If you prefer the canvas to always fill the height (even if part of it is wider than viewport),
+            // you could choose `scale = vh / BASE_HEIGHT` instead. Using Math.min prevents clipping.
+        }
+
+        // Ensure responsiveness
+        window.addEventListener('resize', resizeCanvasToViewport);
+        // Also call on load so initial size is correct
+        resizeCanvasToViewport();
+
         // Mario-style Physics Constants (Tuned for 60fps)
-        const GRAVITY = 0.4; // 0.25
+        const GRAVITY = 0.4;
         const MAX_GRAVITY = 12; // Terminal velocity
         const ACCEL = 0.15; // Run acceleration
         const FRICTION = 0.88; // Ground friction
         const AIR_RESISTANCE = 0.95;
-        const JUMP_FORCE = -5.5; // Base jump
-        const JUMP_HOLD = -0.3; // Added while holding jump
+        const JUMP_FORCE = -7.5; // INCREASED: Was -5.5, now -7.5 for higher jumps
+        const JUMP_HOLD = -0.5; // INCREASED: Was -0.3, now -0.5 for better jump control
         const MAX_SPEED = 3.5;
         const SPRINT_SPEED = 6.0;
         const BOUNCE_FORCE = -5;
@@ -408,7 +452,7 @@
                 this.tiles = new Array(this.mapHeight).fill(0).map(() => new Array(this.mapWidth).fill(0));
                 
                 // Generators
-                const floorY = 12;
+                const floorY = 9;
                 
                 // 1. Fill Floor
                 for(let x=0; x<this.mapWidth; x++) {
@@ -423,16 +467,16 @@
 
                 // 2. Add Platforms & Blocks
                 for(let x=10; x<this.mapWidth-10; x++) {
-                    // Item Blocks
+                    // Item Blocks - REDUCED obstacle height
                     if (Math.random() < 0.1) {
-                        const h = 4 + Math.floor(Math.random() * 4);
+                        const h = 2 + Math.floor(Math.random() * 2); // REDUCED: Was 4 + Math.floor(Math.random() * 4), now 2-3 tiles high
                         this.tiles[floorY - h][x] = 3; // 3 = Question Block
                         if(Math.random() > 0.5) this.tiles[floorY - h][x+1] = 2; // 2 = Brick
                     }
                     
-                    // Pipes / Pillars
+                    // Pipes / Pillars - REDUCED height
                     if (Math.random() < 0.05) {
-                        const h = 2 + Math.floor(Math.random() * 2);
+                        const h = 1 + Math.floor(Math.random() * 1); // REDUCED: Was 2-3, now 1-2 tiles high
                         for(let y=0; y<h; y++) this.tiles[floorY-1-y][x] = 1;
                     }
 
@@ -704,17 +748,35 @@
 
             draw() {
                 if(this.dead) return;
-                // Center sprite on hitbox
-                const drawX = Math.round(this.x - 6);
-                const drawY = Math.round(this.y - 4);
-                
+
+                // Use the actual sprite size and scale so we place it correctly.
+                const sprite = sprites.player_idle;
+                if (!sprite) return;
+
+                const spriteW = sprite.width;   // original sprite width (16)
+                const spriteH = sprite.height;  // original sprite height (24)
+                const scale = 2;
+                const drawW = spriteW * scale;  // 32
+                const drawH = spriteH * scale;  // 48
+
+                // Center horizontally on the hitbox
+                const centerX = this.x + this.w / 2;
+                const drawX = Math.round(centerX - drawW / 2);
+
+                // FIXED: Draw sprite so its BOTTOM sits exactly at the player's hitbox bottom
+                // Player.y + Player.h is the ground level. Sprite bottom is at spriteY + drawH.
+                // So: spriteY + drawH = this.y + this.h
+                // Therefore: spriteY = this.y + this.h - drawH
+                const drawY = Math.round(this.y + this.h - drawH);
+
                 ctx.save();
                 if (!this.facingRight) {
-                    ctx.translate(drawX + 32, drawY);
+                    // Flip horizontally around the sprite's right edge
+                    ctx.translate(drawX + drawW, drawY);
                     ctx.scale(-1, 1);
-                    ctx.drawImage(sprites.player_idle, 0, 0, 32, 32);
+                    ctx.drawImage(sprite, 0, 0, drawW, drawH);
                 } else {
-                    ctx.drawImage(sprites.player_idle, drawX, drawY, 32, 32);
+                    ctx.drawImage(sprite, drawX, drawY, drawW, drawH);
                 }
                 ctx.restore();
             }
